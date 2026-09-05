@@ -73,13 +73,23 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
-  const httpServer = createServer((req, res) => {
-    const parsedUrl = parse(req.url ?? "", true);
-    handle(req, res, parsedUrl);
-  });
+  const httpServer = createServer();
 
   const io = new Server(httpServer, {
     path: "/api/socket",
+    cors: {
+      origin: true,
+      credentials: true,
+    },
+    transports: ["polling", "websocket"],
+  });
+
+  httpServer.on("request", (req, res) => {
+    const pathname = parse(req.url ?? "", true).pathname ?? "";
+    if (pathname.startsWith("/api/socket")) {
+      return;
+    }
+    handle(req, res, parse(req.url ?? "", true));
   });
 
   io.on("connection", (socket) => {

@@ -17,7 +17,18 @@ function generateRoomCode() {
 
 export function JoinForm({ initialRoom, onJoin, isConnecting }: JoinFormProps) {
   const [name, setName] = useState("");
-  const [roomId, setRoomId] = useState(initialRoom ?? generateRoomCode());
+  const [roomId, setRoomId] = useState(() => {
+    if (initialRoom) return initialRoom;
+    if (typeof window !== "undefined") {
+      const saved = sessionStorage.getItem("friend-locator-room");
+      if (saved) return saved;
+    }
+    const code = generateRoomCode();
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("friend-locator-room", code);
+    }
+    return code;
+  });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -80,7 +91,11 @@ export function JoinForm({ initialRoom, onJoin, isConnecting }: JoinFormProps) {
               />
               <button
                 type="button"
-                onClick={() => setRoomId(generateRoomCode())}
+                onClick={() => {
+                  const code = generateRoomCode();
+                  sessionStorage.setItem("friend-locator-room", code);
+                  setRoomId(code);
+                }}
                 className="shrink-0 rounded-xl border border-white/10 px-3 text-sm text-slate-300 transition hover:bg-white/10"
                 title="Generate new room code"
               >

@@ -91,18 +91,29 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
       setIsConnecting(true);
       setLocationError(null);
 
-      const socket = io({
+      const socket = io(window.location.origin, {
         path: "/api/socket",
-        transports: ["websocket", "polling"],
+        transports: ["polling", "websocket"],
+        reconnectionAttempts: 5,
+        timeout: 10000,
       });
 
       socketRef.current = socket;
+
+      const joinTimeout = window.setTimeout(() => {
+        setLocationError("Connection timed out. Please try again.");
+        setIsConnecting(false);
+        socket.disconnect();
+      }, 12000);
+
+      const clearJoinTimeout = () => window.clearTimeout(joinTimeout);
 
       socket.on("connect", () => {
         socket.emit(
           "join",
           { roomId: nextRoomId, name },
           (response: { userId: string; users: FriendLocation[] }) => {
+            clearJoinTimeout();
             setYouId(response.userId);
             setFriends(
               response.users.map((user) => ({
@@ -133,11 +144,13 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
       });
 
       socket.on("error", (payload: { message: string }) => {
+        clearJoinTimeout();
         setLocationError(payload.message);
         setIsConnecting(false);
       });
 
       socket.on("connect_error", () => {
+        clearJoinTimeout();
         setLocationError("Could not connect to the server.");
         setIsConnecting(false);
       });
