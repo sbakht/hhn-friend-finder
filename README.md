@@ -22,9 +22,39 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:43123](http://localhost:43123).
+Open [http://localhost:43123](http://localhost:43123) on your computer.
 
-To test with friends, open the same room link in another browser tab or on another device on the same network.
+## Use from your phone
+
+`127.0.0.1` and `localhost` only work on the computer running the app. Your phone needs a different URL.
+
+### Option 1: Same Wi-Fi (easiest)
+
+1. Clone this repo and run it on your **own computer** (not the Cloud Agent preview).
+2. Make sure your phone is on the **same Wi-Fi** as that computer.
+3. Start the app: `npm run dev`
+4. The terminal prints your LAN address, e.g. `http://192.168.1.42:43123`
+5. Open that URL in your phone's browser.
+
+**iPhone note:** Safari often blocks location on plain `http://` pages. If location doesn't work, use Option 2.
+
+### Option 2: HTTPS tunnel (works on iPhone)
+
+Expose your local server with a free HTTPS tunnel:
+
+```bash
+# Terminal 1
+npm run dev
+
+# Terminal 2
+npx localtunnel --port 43123
+```
+
+Open the `https://....loca.lt` URL on your phone. Share that link with friends so everyone joins the same room.
+
+### Option 3: Two phones on the same computer
+
+Open two browser tabs on your computer, or use desktop + phone with Option 1 or 2.
 
 ## Notes
 

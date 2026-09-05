@@ -1,4 +1,5 @@
 import { createServer } from "http";
+import { networkInterfaces } from "os";
 import { parse } from "url";
 import next from "next";
 import { Server, type Socket } from "socket.io";
@@ -69,7 +70,18 @@ function removeUser(
   }
 }
 
-const app = next({ dev, hostname, port });
+function getLanAddresses(): string[] {
+  const addresses: string[] = [];
+  for (const iface of Object.values(networkInterfaces())) {
+    for (const config of iface ?? []) {
+      if (config.family === "IPv4" && !config.internal) {
+        addresses.push(config.address);
+      }
+    }
+  }
+  return addresses;
+}
+
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
@@ -163,6 +175,10 @@ app.prepare().then(() => {
   });
 
   httpServer.listen(port, hostname, () => {
-    console.log(`> Ready on http://${hostname}:${port}`);
+    console.log(`> Ready on http://localhost:${port}`);
+    for (const address of getLanAddresses()) {
+      console.log(`> On your Wi-Fi, open http://${address}:${port} from your phone`);
+    }
+    console.log(`> For iPhone geolocation, use an HTTPS tunnel (see README)`);
   });
 });
