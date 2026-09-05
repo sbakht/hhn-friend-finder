@@ -3,10 +3,12 @@ import { networkInterfaces } from "os";
 import { parse } from "url";
 import next from "next";
 import { Server, type Socket } from "socket.io";
+import { randomUUID } from "crypto";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 43123);
+const MAX_STATUSES = 100;
 
 const FRIEND_COLORS = [
   "#ef4444",
@@ -26,14 +28,30 @@ interface RoomUser {
   lng: number;
   color: string;
   updatedAt: number;
+  latestStatus: string | null;
+  latestStatusAt: number | null;
+}
+
+interface StatusUpdate {
+  id: string;
+  userId: string;
+  userName: string;
+  userColor: string;
+  text: string;
+  createdAt: number;
 }
 
 const rooms = new Map<string, Map<string, RoomUser>>();
+const roomStatuses = new Map<string, StatusUpdate[]>();
 
 function getRoomUsers(roomId: string): RoomUser[] {
   const room = rooms.get(roomId);
   if (!room) return [];
   return Array.from(room.values());
+}
+
+function getRoomStatuses(roomId: string): StatusUpdate[] {
+  return roomStatuses.get(roomId) ?? [];
 }
 
 function pickColor(roomId: string): string {
@@ -51,6 +69,10 @@ function broadcastRoom(io: Server, roomId: string) {
   io.to(roomId).emit("users:update", getRoomUsers(roomId));
 }
 
+function broadcastStatuses(io: Server, roomId: string) {
+  io.to(roomId).emit("statuses:update", getRoomStatuses(roomId));
+}
+
 function removeUser(
   io: Server,
   socket: Socket,
@@ -65,6 +87,7 @@ function removeUser(
   room.delete(userId);
   if (room.size === 0) {
     rooms.delete(roomId);
+    roomStatuses.delete(roomId);
   } else {
     broadcastRoom(io, roomId);
   }
@@ -82,6 +105,7 @@ function getLanAddresses(): string[] {
   return addresses;
 }
 
+const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
@@ -112,7 +136,11 @@ app.prepare().then(() => {
       "join",
       (
         { roomId, name }: { roomId: string; name: string },
-        callback?: (response: { userId: string; users: RoomUser[] }) => void,
+        callback?: (response: {
+          userId: string;
+          users: RoomUser[];
+          statuses: StatusUpdate[];
+        }) => void,
       ) => {
         const trimmedRoom = roomId.trim().toUpperCase();
         const trimmedName = name.trim();
@@ -133,6 +161,9 @@ app.prepare().then(() => {
         if (!rooms.has(trimmedRoom)) {
           rooms.set(trimmedRoom, new Map());
         }
+        if (!roomStatuses.has(trimmedRoom)) {
+          roomStatuses.set(trimmedRoom, []);
+        }
 
         const user: RoomUser = {
           id: userId,
@@ -141,13 +172,19 @@ app.prepare().then(() => {
           lng: 0,
           color: pickColor(trimmedRoom),
           updatedAt: Date.now(),
+          latestStatus: null,
+          latestStatusAt: null,
         };
 
         rooms.get(trimmedRoom)!.set(userId, user);
         socket.join(trimmedRoom);
         broadcastRoom(io, trimmedRoom);
 
-        callback?.({ userId, users: getRoomUsers(trimmedRoom) });
+        callback?.({
+          userId,
+          users: getRoomUsers(trimmedRoom),
+          statuses: getRoomStatuses(trimmedRoom),
+        });
       },
     );
 
@@ -166,6 +203,39 @@ app.prepare().then(() => {
         broadcastRoom(io, currentRoom);
       },
     );
+
+    socket.on("status:post", ({ text }: { text: string }) => {
+      if (!currentRoom || !userId) return;
+
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.length > 280) return;
+
+      const room = rooms.get(currentRoom);
+      const user = room?.get(userId);
+      if (!user) return;
+
+      const status: StatusUpdate = {
+        id: randomUUID(),
+        userId,
+        userName: user.name,
+        userColor: user.color,
+        text: trimmed,
+        createdAt: Date.now(),
+      };
+
+      const statuses = roomStatuses.get(currentRoom) ?? [];
+      statuses.unshift(status);
+      if (statuses.length > MAX_STATUSES) {
+        statuses.length = MAX_STATUSES;
+      }
+      roomStatuses.set(currentRoom, statuses);
+
+      user.latestStatus = trimmed;
+      user.latestStatusAt = status.createdAt;
+
+      broadcastStatuses(io, currentRoom);
+      broadcastRoom(io, currentRoom);
+    });
 
     socket.on("disconnect", () => {
       removeUser(io, socket, currentRoom, userId);

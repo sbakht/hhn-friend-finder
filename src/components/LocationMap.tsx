@@ -90,9 +90,14 @@ export function LocationMap({ friends, youId }: LocationMapProps) {
           icon={createMarkerIcon(friend.color, friend.id === youId)}
         >
           <Popup>
-            <div className="text-sm">
+            <div className="max-w-[200px] text-sm">
               <strong>{friend.name}</strong>
               {friend.id === youId ? " (you)" : ""}
+              {friend.latestStatus && (
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                  {friend.latestStatus}
+                </p>
+              )}
             </div>
           </Popup>
         </Marker>
