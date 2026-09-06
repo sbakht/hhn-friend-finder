@@ -2,7 +2,6 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { io, type Socket } from "socket.io-client";
 import { JoinForm } from "@/components/JoinForm";
 import { StatusFeed } from "@/components/StatusFeed";
 import type { FriendLocation, JoinResponse, StatusUpdate } from "@/lib/types";
@@ -39,9 +38,9 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
   const [copied, setCopied] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("map");
 
-  const socketRef = useRef<Socket | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const lastSentRef = useRef(0);
+  const pollRef = useRef<number | null>(null);
 
   const shareUrl = useMemo(() => {
     if (!roomId || typeof window === "undefined") return "";
@@ -57,129 +56,172 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
     }
   }, []);
 
-  const startTracking = useCallback((socket: Socket) => {
-    if (!navigator.geolocation) {
-      setLocationError("Geolocation is not supported in this browser.");
-      return;
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (position) => {
-        const now = Date.now();
-        if (now - lastSentRef.current < 3000) return;
-        lastSentRef.current = now;
-
-        socket.emit("location:update", {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        });
-        setLocationError(null);
-      },
-      (error) => {
-        const message =
-          error.code === error.PERMISSION_DENIED
-            ? "Location permission denied. Enable it to share your position."
-            : "Unable to read your location.";
-        setLocationError(message);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 5000,
-        timeout: 15000,
-      },
-    );
   }, []);
 
+  const fetchState = useCallback(
+    async (currentRoomId: string, currentUserId: string) => {
+      const response = await fetch(
+        `/api/rooms/${encodeURIComponent(currentRoomId)}/state?userId=${encodeURIComponent(currentUserId)}`,
+      );
+      if (!response.ok) return;
+
+      const data = (await response.json()) as {
+        users: FriendLocation[];
+        statuses: StatusUpdate[];
+      };
+
+      setFriends(
+        data.users.map((user) => ({
+          ...user,
+          isYou: user.id === currentUserId,
+        })),
+      );
+      setStatuses(data.statuses);
+
+      const you = data.users.find((user) => user.id === currentUserId);
+      if (you?.color) setYourColor(you.color);
+    },
+    [],
+  );
+
+  const startPolling = useCallback(
+    (currentRoomId: string, currentUserId: string) => {
+      stopPolling();
+      void fetchState(currentRoomId, currentUserId);
+      pollRef.current = window.setInterval(() => {
+        void fetchState(currentRoomId, currentUserId);
+      }, 2000);
+    },
+    [fetchState, stopPolling],
+  );
+
+  const startTracking = useCallback(
+    (currentRoomId: string, currentUserId: string) => {
+      if (!navigator.geolocation) {
+        setLocationError("Geolocation is not supported in this browser.");
+        return;
+      }
+
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          const now = Date.now();
+          if (now - lastSentRef.current < 3000) return;
+          lastSentRef.current = now;
+
+          void fetch(
+            `/api/rooms/${encodeURIComponent(currentRoomId)}/location`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                userId: currentUserId,
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+              }),
+            },
+          );
+          setLocationError(null);
+        },
+        (error) => {
+          const message =
+            error.code === error.PERMISSION_DENIED
+              ? "Location permission denied. Enable it to share your position."
+              : "Unable to read your location.";
+          setLocationError(message);
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 5000,
+          timeout: 15000,
+        },
+      );
+    },
+    [],
+  );
+
   const handleJoin = useCallback(
-    (nextRoomId: string, name: string) => {
+    async (nextRoomId: string, name: string) => {
       setIsConnecting(true);
       setLocationError(null);
 
-      const socket = io(window.location.origin, {
-        path: "/api/socket",
-        transports: ["polling", "websocket"],
-        reconnectionAttempts: 5,
-        timeout: 10000,
-      });
-
-      socketRef.current = socket;
-
-      const joinTimeout = window.setTimeout(() => {
-        setLocationError("Connection timed out. Please try again.");
-        setIsConnecting(false);
-        socket.disconnect();
-      }, 12000);
-
-      const clearJoinTimeout = () => window.clearTimeout(joinTimeout);
-
-      socket.on("connect", () => {
-        socket.emit(
-          "join",
-          { roomId: nextRoomId, name },
-          (response: JoinResponse) => {
-            clearJoinTimeout();
-            const you = response.users.find((user) => user.id === response.userId);
-            setYouId(response.userId);
-            setYourColor(you?.color ?? "#3b82f6");
-            setFriends(
-              response.users.map((user) => ({
-                ...user,
-                isYou: user.id === response.userId,
-              })),
-            );
-            setStatuses(response.statuses);
-            setRoomId(nextRoomId);
-            setYourName(name);
-            setJoined(true);
-            setIsConnecting(false);
-            startTracking(socket);
-
-            const url = new URL(window.location.href);
-            url.searchParams.set("room", nextRoomId);
-            window.history.replaceState({}, "", url.toString());
+      try {
+        const response = await fetch(
+          `/api/rooms/${encodeURIComponent(nextRoomId)}/join`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
           },
         );
-      });
 
-      socket.on("users:update", (users: FriendLocation[]) => {
+        const data = (await response.json()) as JoinResponse & { message?: string };
+        if (!response.ok) {
+          throw new Error(data.message ?? "Unable to join room.");
+        }
+
+        const you = data.users.find((user) => user.id === data.userId);
+        setYouId(data.userId);
+        setYourColor(you?.color ?? "#3b82f6");
         setFriends(
-          users.map((user) => ({
+          data.users.map((user) => ({
             ...user,
-            isYou: user.id === socket.id,
+            isYou: user.id === data.userId,
           })),
         );
-        const you = users.find((user) => user.id === socket.id);
-        if (you?.color) setYourColor(you.color);
-      });
-
-      socket.on("statuses:update", (nextStatuses: StatusUpdate[]) => {
-        setStatuses(nextStatuses);
-      });
-
-      socket.on("error", (payload: { message: string }) => {
-        clearJoinTimeout();
-        setLocationError(payload.message);
+        setStatuses(data.statuses);
+        setRoomId(nextRoomId);
+        setYourName(name);
+        setJoined(true);
         setIsConnecting(false);
-      });
+        startPolling(nextRoomId, data.userId);
+        startTracking(nextRoomId, data.userId);
 
-      socket.on("connect_error", () => {
-        clearJoinTimeout();
-        setLocationError("Could not connect to the server.");
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", nextRoomId);
+        window.history.replaceState({}, "", url.toString());
+      } catch (error) {
+        setLocationError(
+          error instanceof Error ? error.message : "Could not connect to the server.",
+        );
         setIsConnecting(false);
-      });
+      }
     },
-    [startTracking],
+    [startPolling, startTracking],
   );
 
-  const handlePostStatus = useCallback((text: string) => {
-    socketRef.current?.emit("status:post", { text });
-    setActiveView("feed");
-  }, []);
+  const handlePostStatus = useCallback(
+    async (text: string) => {
+      if (!roomId || !youId) return;
+
+      await fetch(`/api/rooms/${encodeURIComponent(roomId)}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: youId, text }),
+      });
+      await fetchState(roomId, youId);
+      setActiveView("feed");
+    },
+    [fetchState, roomId, youId],
+  );
 
   const handleLeave = useCallback(() => {
     stopTracking();
-    socketRef.current?.disconnect();
-    socketRef.current = null;
+    stopPolling();
+
+    if (roomId && youId) {
+      void fetch(`/api/rooms/${encodeURIComponent(roomId)}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: youId }),
+        keepalive: true,
+      });
+    }
+
     setJoined(false);
     setFriends([]);
     setStatuses([]);
@@ -188,7 +230,7 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
     setYourName("");
     setLocationError(null);
     setActiveView("map");
-  }, [stopTracking]);
+  }, [roomId, stopPolling, stopTracking, youId]);
 
   const handleCopyLink = useCallback(async () => {
     if (!shareUrl) return;
@@ -200,9 +242,9 @@ export function ShareApp({ initialRoom }: ShareAppProps) {
   useEffect(() => {
     return () => {
       stopTracking();
-      socketRef.current?.disconnect();
+      stopPolling();
     };
-  }, [stopTracking]);
+  }, [stopPolling, stopTracking]);
 
   if (!joined) {
     return (
